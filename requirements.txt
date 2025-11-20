@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+pydantic
+moviepy
+pillow
+whisper
+torch
+torchaudio
+transformers
+accelerate
+ffmpeg-python
+python-multipart
+numpy
+cuda-python

@@ -1,0 +1,5 @@
+{
+  "name": "CineEdit-AI Frontend",
+  "description": "Un'interfaccia web per CineEdit-AI, un assistente di video editing potenziato dall'IA. Carica un video, avvia la pipeline e visualizza il risultato finale, completo di trascrizione e piano di montaggio generato dall'IA.",
+  "requestFramePermissions": []
+}

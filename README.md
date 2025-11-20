@@ -1,0 +1,1 @@
+& "C:/Users/Iglis Gjoni/Desktop/Progetto HDT/CineEdit-AI/.venv/Scripts/Activate.ps1"
