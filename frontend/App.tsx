@@ -121,45 +121,48 @@ const App: React.FC = () => {
     }
   };
 
-  // --- ECCO LA FUNZIONE CHE MANCAVA ---
+  // --- NUOVA FUNZIONE ---
+  const handleBackToScenes = () => {
+    console.log("Torno alla selezione scene...");
+    // Non resettiamo analysisResult o originalVideoUrl!
+    // Resettiamo solo il risultato finale della clip
+    setFinalClipUrl(null);
+    setFinalResultData(null);
+    
+    // Torniamo allo stato precedente
+    setAppState('ready_to_edit');
+  };
+  // ----------------------
+
   const handleReset = () => {
-    console.log("Resetting App...");
+    console.log("Reset totale...");
     setAppState('idle');
     setVideoFile(null);
-    
-    // Pulizia memoria URL
-    if (originalVideoUrl) {
-        URL.revokeObjectURL(originalVideoUrl);
-    }
+    if (originalVideoUrl) URL.revokeObjectURL(originalVideoUrl);
     setOriginalVideoUrl(null);
-    
     setJobId(null);
     setAnalysisResult(null);
     setFinalClipUrl(null);
     setFinalResultData(null);
     setError(null);
-    setProcessingMessage('');
   };
-  // ------------------------------------
 
+  // RENDERING
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 flex flex-col items-center">
       <Header />
       
       <main className="w-full max-w-6xl mt-8 border border-slate-800 p-4 rounded bg-slate-800/50">
         
-        <div className="text-xs text-slate-500 mb-4 text-center">
-            Stato: {appState} | File: {videoFile ? 'Sì' : 'No'}
-        </div>
-
-        {appState === 'error' && (
-            <ErrorDisplay message={error || "Errore"} onReset={handleReset} />
-        )}
-
+        {/* ... Error e Processing rimangono uguali ... */}
+        {appState === 'error' && <ErrorDisplay message={error || "Errore"} onReset={handleReset} />}
+        
+        {/* ... AnalysisView rimane uguale ... */}
         {appState === 'analyzing' && jobId && (
             <AnalysisView jobId={jobId} onAnalysisComplete={handleAnalysisComplete} onError={(e) => setError(e)} />
         )}
         
+        {/* ... EpisodeEditorView rimane uguale ... */}
         {appState === 'ready_to_edit' && analysisResult && originalVideoUrl && (
             <EpisodeEditorView 
                 originalVideoUrl={originalVideoUrl} 
@@ -169,28 +172,27 @@ const App: React.FC = () => {
             />
         )}
 
-        {appState === 'editing_clip' && (
-            <ProcessingIndicator message={processingMessage} />
-        )}
+        {/* ... ProcessingIndicator rimane uguale ... */}
+        {appState === 'editing_clip' && <ProcessingIndicator message={processingMessage} />}
 
+        {/* MODIFICATO: ResultsView ora riceve handleBackToScenes */}
         {appState === 'clip_ready' && finalResultData && originalVideoUrl && finalClipUrl && (
             <ResultsView 
                 result={finalResultData} 
                 originalVideoUrl={originalVideoUrl} 
                 editedVideoUrl={finalClipUrl} 
                 onReset={handleReset} 
+                onBackToScenes={handleBackToScenes} // <--- ECCOLO
             />
         )}
 
+        {/* ... FileUpload rimane uguale ... */}
         {appState === 'idle' && (
             <FileUpload onFileSelect={handleFileSelect}>
                 {videoFile && (
                     <div className="mt-6 text-center">
                         <p className="mb-4 text-green-400">Video caricato: {videoFile.name}</p>
-                        <button 
-                            onClick={uploadAndAnalyze}
-                            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-6 rounded"
-                        >
+                        <button onClick={uploadAndAnalyze} className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-6 rounded">
                             AVVIA ANALISI
                         </button>
                     </div>
@@ -202,5 +204,4 @@ const App: React.FC = () => {
     </div>
   );
 };
-
 export default App;
