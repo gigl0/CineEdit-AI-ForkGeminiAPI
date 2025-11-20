@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Header } from './components/Header';
 import { FileUpload } from './components/FileUpload';
 import { ProcessingIndicator } from './components/ProcessingIndicator';
@@ -6,12 +6,12 @@ import { ResultsView } from './components/ResultsView';
 import { ErrorDisplay } from './components/ErrorDisplay';
 import { AnalysisView } from './components/AnalysisView';
 import { EpisodeEditorView } from './components/EpisodeEditorView';
-import type { AnalysisResult, NarrativeSection, PipelineResult } from './types'; // NOTA: ./types non ../types
+import type { AnalysisResult, NarrativeSection, PipelineResult } from './types';
 
 type AppState = 'idle' | 'analyzing' | 'ready_to_edit' | 'editing_clip' | 'clip_ready' | 'error';
 
 const App: React.FC = () => {
-  console.log("App Rendering..."); // DEBUG
+  console.log("App Rendering..."); 
 
   const [appState, setAppState] = useState<AppState>('idle');
   const [processingMessage, setProcessingMessage] = useState('');
@@ -25,7 +25,7 @@ const App: React.FC = () => {
   const [finalResultData, setFinalResultData] = useState<PipelineResult | null>(null);
 
   const handleFileSelect = useCallback((file: File) => {
-    console.log("File selezionato:", file.name); // DEBUG
+    console.log("File selezionato:", file.name);
     if (originalVideoUrl) URL.revokeObjectURL(originalVideoUrl);
     setVideoFile(file);
     setOriginalVideoUrl(URL.createObjectURL(file));
@@ -34,7 +34,7 @@ const App: React.FC = () => {
   }, [originalVideoUrl]);
 
   const uploadAndAnalyze = async () => {
-    console.log("Click su Analizza"); // DEBUG
+    console.log("Click su Analizza");
     if (!videoFile) return;
     setAppState('analyzing');
     
@@ -42,7 +42,6 @@ const App: React.FC = () => {
     formData.append('file', videoFile);
 
     try {
-      // NOTA: Assicurati che il backend sia acceso su localhost:8000
       const response = await fetch('http://localhost:8000/episodes/upload_and_analyze', {
         method: 'POST',
         body: formData,
@@ -50,7 +49,7 @@ const App: React.FC = () => {
 
       if (!response.ok) throw new Error('Errore connessione Backend');
       const data = await response.json();
-      console.log("Upload OK, JobID:", data.job_id); // DEBUG
+      console.log("Upload OK, JobID:", data.job_id);
       setJobId(data.job_id);
     } catch (err: any) {
       console.error("Errore Upload:", err);
@@ -60,49 +59,95 @@ const App: React.FC = () => {
   };
 
   const handleAnalysisComplete = (result: AnalysisResult) => {
-    console.log("Analisi completata:", result); // DEBUG
+    console.log("Analisi completata:", result);
     setAnalysisResult(result);
     setAppState('ready_to_edit');
   };
   
   const handleEditSection = async (section: NarrativeSection) => {
-    console.log("Editing sezione:", section.title); // DEBUG
-    setAppState('editing_clip');
-    setProcessingMessage(`Creo clip: ${section.title}...`);
+    console.log("Avvio creazione clip reale per:", section.title);
     
-    // Simulazione attesa
-    setTimeout(() => {
-        const mockUrl = "http://localhost:8000/output/demo.mp4"; 
-        setFinalClipUrl(mockUrl);
-        setFinalResultData({
-            ok: true,
-            video_path: "demo",
-            transcript: "demo text",
-            output_video: mockUrl,
-            plan: { mood: "Epic", music: "Rock", caption: section.title, fx: [], color: "Warm" }
-        });
-        setAppState('clip_ready');
-    }, 2000);
+    setAppState('editing_clip');
+    setProcessingMessage(`Generazione Reel: "${section.title}"... (Taglio, Crop 9:16, Sottotitoli)`);
+    
+    try {
+      const response = await fetch('http://localhost:8000/episodes/create_clip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          source_job_id: jobId,
+          start_sec: section.start_sec,
+          end_sec: section.end_sec,
+          title: section.title,
+          style: "cinematic",         
+          music: "ambient"
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ detail: "Errore sconosciuto" }));
+        throw new Error(errData.detail || "Errore durante la creazione della clip");
+      }
+
+      const result = await response.json();
+      console.log("Clip creata:", result);
+
+      const realVideoUrl = `http://localhost:8000${result.output_video}`;
+      
+      setFinalClipUrl(realVideoUrl); 
+      
+      setFinalResultData({
+          ok: true,
+          video_path: videoFile?.name || "video.mp4",
+          transcript: section.summary, 
+          output_video: result.output_video,
+          plan: {
+            mood: section.keywords.join(", "),
+            music: "Ambient Mix",
+            caption: section.title,
+            fx: ["9:16 Vertical Crop", "Blur Background", "Auto-Subtitles"],
+            color: "Standard"
+          }
+      });
+
+      setAppState('clip_ready');
+
+    } catch (e: any) {
+      console.error("Errore creazione clip:", e);
+      setError(e.message || "Impossibile creare la clip. Controlla i log del backend.");
+      setAppState('error');
+    }
   };
 
+  // --- ECCO LA FUNZIONE CHE MANCAVA ---
   const handleReset = () => {
+    console.log("Resetting App...");
     setAppState('idle');
     setVideoFile(null);
+    
+    // Pulizia memoria URL
+    if (originalVideoUrl) {
+        URL.revokeObjectURL(originalVideoUrl);
+    }
     setOriginalVideoUrl(null);
+    
     setJobId(null);
     setAnalysisResult(null);
     setFinalClipUrl(null);
+    setFinalResultData(null);
     setError(null);
+    setProcessingMessage('');
   };
+  // ------------------------------------
 
-  // RENDERING CONDIZIONALE SEMPLIFICATO
   return (
     <div className="min-h-screen bg-slate-900 text-white p-4 flex flex-col items-center">
       <Header />
       
       <main className="w-full max-w-6xl mt-8 border border-slate-800 p-4 rounded bg-slate-800/50">
         
-        {/* DEBUG STATE VISUALIZER (Rimuovere in produzione) */}
         <div className="text-xs text-slate-500 mb-4 text-center">
             Stato: {appState} | File: {videoFile ? 'Sì' : 'No'}
         </div>
@@ -137,7 +182,6 @@ const App: React.FC = () => {
             />
         )}
 
-        {/* DEFAULT VIEW: UPLOAD */}
         {appState === 'idle' && (
             <FileUpload onFileSelect={handleFileSelect}>
                 {videoFile && (
