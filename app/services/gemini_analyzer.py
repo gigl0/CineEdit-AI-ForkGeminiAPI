@@ -3,66 +3,52 @@ import json
 import re
 from app.core.config import settings
 
-# Configura Gemini con la chiave
 genai.configure(api_key=settings.GOOGLE_API_KEY)
 
 def extract_json_block(text: str) -> str:
-    """Pulisce l'output per estrarre solo il JSON."""
     text = text.replace("```json", "").replace("```", "")
     match = re.search(r"\[(?:.|\n)*\]", text)
-    if match:
-        return match.group(0)
-    return text.strip()
+    return match.group(0) if match else "[]"
 
 def generate_narrative_sections(full_transcript: str, scenes: list) -> list:
     """
-    Usa Gemini 1.5 Flash per analizzare il testo trascritto.
+    STEP 1: CONTENT CURATION & SENTIMENT ANALYSIS
+    Obiettivo: Massimizzare il Retention Rate identificando High Intensity Moments.
     """
-    print("[GEMINI] Caricamento modello Gemini 1.5 Flash...")
+    print("[PIPELINE STEP 1] Content Curation via Gemini 1.5...")
     
-    # --- MODIFICA QUI: Usiamo Flash che è più stabile e veloce ---
-    model = genai.GenerativeModel('models/gemini-2.5-pro-preview-06-05')
-    
+    # Usiamo il modello stabile o preview a tua scelta
+    model = genai.GenerativeModel('gemini-2.0-flash-exp') 
+
     prompt = f"""
-    Role: You are a world-class Video Editor and Social Media Strategist.
-    Task: Analyze the transcript of a video episode and technical scene timestamps to identify 3-5 VIRAL CLIPS.
+    ROLE: Expert Video Editor & Growth Hacker for Instagram Reels / TikTok.
+    OBJECTIVE: Analyze the TV Episode transcript to find 3 "High Retention" clips.
 
     INPUT DATA:
-    1. TRANSCRIPT (Content of the video):
-    {full_transcript[:150000]} 
-    
-    2. SCENE CUTS (Timestamps boundaries):
-    {json.dumps(scenes[:80], indent=2)}
+    - TRANSCRIPT (Context): {full_transcript[:100000]}
+    - SCENE BOUNDARIES: {json.dumps(scenes[:80], indent=2)}
 
-    CRITERIA FOR A VIRAL CLIP:
-    - Must be self-contained (has a clear start and end).
-    - Duration: Strictly between 30 seconds and 90 seconds.
-    - Content: High emotion, funny jokes, plot twists, or strong conflict.
-    - The output timestamp MUST align roughly with the provided Scene Cuts.
+    SELECTION LOGIC (The "Viral Formula"):
+    1. THE HOOK (0-3s): The clip must start with a strong visual or dialogue hook.
+    2. VALUE: High drama, conflict, humor, or "sigma" energy.
+    3. DURATION: 30s to 60s (Sweet spot for watch time).
 
-    OUTPUT FORMAT:
-    Return ONLY a JSON Array containing objects with these keys:
+    OUTPUT JSON FORMAT ONLY:
     [
       {{
-        "title": "Clickbait/Hook Title",
-        "summary": "One sentence explanation of why this is viral.",
+        "title": "POV: When you realize...",
+        "summary": "Reasoning for selection (e.g. 'High tension dialogue').",
         "start_sec": 120.5,
-        "end_sec": 180.0,
-        "keywords": ["funny", "emotional"]
+        "end_sec": 160.0,
+        "keywords": ["suspense", "sigma", "money"],
+        "virality_score": 95
       }}
     ]
-    
-    Do not add any markdown or explanation. Just the JSON string.
     """
 
     try:
-        print("[GEMINI] Inviando richiesta a Google...")
         response = model.generate_content(prompt)
-        
-        print("[GEMINI] Risposta ricevuta. Parsing...")
-        cleaned_json = extract_json_block(response.text)
-        return json.loads(cleaned_json)
-
+        return json.loads(extract_json_block(response.text))
     except Exception as e:
-        print(f"[GEMINI ERROR] Errore durante la chiamata API: {e}")
+        print(f"[GEMINI ERROR] {e}")
         return []

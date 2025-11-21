@@ -1,191 +1,209 @@
 import os
 import numpy as np
+import librosa
+import whisper
+import torch
 from moviepy.editor import (
     VideoFileClip, AudioFileClip, CompositeVideoClip, 
-    CompositeAudioClip, ColorClip, vfx, afx
+    CompositeAudioClip, TextClip, ColorClip, vfx, afx
 )
-from ultralytics import YOLO # Il cervello visivo
-from app.services.music_processor import detect_beats
+from moviepy.video.tools.subtitles import SubtitlesClip
+from ultralytics import YOLO
 
-# Carichiamo il modello YOLO una volta sola (versione nano, velocissima)
-print("[AI VISION] Loading YOLO model...")
-model = YOLO('yolov8n.pt') 
+# Carichiamo i modelli una volta sola
+print("[INIT] Loading AI Models on RTX 4060 Ti...")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+yolo_model = YOLO('yolov8n.pt')
+whisper_model = whisper.load_model("medium", device=device)
 
-class SmartCropper:
-    def __init__(self, clip, target_w=1080, target_h=1920):
+# --- TRACKING SOGGETTO (Stabilizzato) ---
+class DynamicTracker:
+    def __init__(self, clip):
         self.clip = clip
-        self.target_w = target_w
-        self.target_h = target_h
         self.centers = []
-        
+
     def analyze(self):
-        """
-        Scansiona il video (un frame ogni 0.5s) per capire dove sono i soggetti.
-        """
-        print("[SMART CROP] Analyzing subject movement...")
+        print("[STEP 2] Analyzing Subject Movement (YOLO Tracking)...")
         duration = self.clip.duration
-        # Analizziamo 2 frame al secondo per velocità
+        # Analizziamo 2 frame al secondo (più veloce, meno jitter)
         times = np.arange(0, duration, 0.5) 
-        
         detected_centers = []
-        
+
+        last_known_center = self.clip.w / 2
+
         for t in times:
-            # Prendi il frame come array numpy
-            frame = self.clip.get_frame(t)
-            
-            # YOLO magic: trova persone
-            results = model(frame, classes=[0], verbose=False) # class 0 = person
-            
-            # Calcola il centro del box più grande (il protagonista)
-            focus_x = self.clip.w / 2 # Default: centro
-            
-            if results[0].boxes:
-                # Prendi la persona più grande (area massima)
-                boxes = results[0].boxes.xywh.cpu().numpy() # x, y, w, h
-                areas = boxes[:, 2] * boxes[:, 3]
-                largest_idx = np.argmax(areas)
-                focus_x = boxes[largest_idx][0]
+            try:
+                frame = self.clip.get_frame(t)
+                results = yolo_model(frame, classes=[0], verbose=False) # 0 = person
                 
-            detected_centers.append(focus_x)
-            
-        # Interpolazione per rendere il movimento fluido
-        # Creiamo una funzione continua dai punti campionati
-        self.centers = np.interp(
-            np.arange(0, duration, 1/self.clip.fps), # Tutti i frame
-            times, 
-            detected_centers
-        )
-        
-        # Smoothing (Media mobile) per evitare mal di mare
-        window_size = int(self.clip.fps * 1.5) # 1.5 secondi di smoothing
-        self.centers = np.convolve(self.centers, np.ones(window_size)/window_size, mode='same')
+                center_x = last_known_center # Fallback
+                
+                if results[0].boxes:
+                    # Trova la persona con area maggiore
+                    boxes = results[0].boxes.xywh.cpu().numpy()
+                    areas = boxes[:, 2] * boxes[:, 3]
+                    largest_idx = np.argmax(areas)
+                    center_x = boxes[largest_idx][0]
+                    last_known_center = center_x # Aggiorna memoria
+                
+                detected_centers.append(center_x)
+            except Exception as e:
+                print(f"Frame error: {e}")
+                detected_centers.append(last_known_center)
 
-    def crop_func(self, get_frame, t):
-        """Funzione chiamata da MoviePy per ogni frame"""
-        frame = get_frame(t)
-        img_h, img_w = frame.shape[:2]
+        # Interpolazione lineare su tutti i frame
+        all_frames_times = np.arange(0, duration, 1/self.clip.fps)
+        self.centers = np.interp(all_frames_times, times, detected_centers)
         
-        # Trova il centro calcolato per questo istante t
-        frame_idx = int(t * self.clip.fps)
-        if frame_idx >= len(self.centers): frame_idx = len(self.centers) - 1
-        
-        center_x = self.centers[frame_idx]
-        
-        # Assicuriamoci di non uscire dai bordi
-        # Calcoliamo quanto dobbiamo tagliare
-        crop_w = (img_h * 9) // 16 # Larghezza necessaria per avere 9:16
-        
-        x1 = int(center_x - (crop_w / 2))
-        
-        # Limiti
-        if x1 < 0: x1 = 0
-        if x1 + crop_w > img_w: x1 = img_w - crop_w
-        
-        # Esegui il crop manuale sull'array (molto più veloce di moviepy.crop)
-        return frame[:, x1:x1+crop_w]
+        # Smoothing AGGRESSIVO (Media mobile di 2 secondi) per evitare mal di mare
+        window = int(self.clip.fps * 2)
+        if window > 0:
+            self.centers = np.convolve(self.centers, np.ones(window)/window, mode='same')
 
+    def get_center(self, t):
+        idx = min(int(t * self.clip.fps), len(self.centers)-1)
+        return self.centers[idx]
 
-def apply_phonk_effects(clip, beat_times):
-    """Effetti ritmici (Flash)"""
+# --- BEAT DETECTION ---
+def get_beat_times(audio_path):
+    try:
+        y, sr = librosa.load(audio_path)
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+        return librosa.frames_to_time(beat_frames, sr=sr)
+    except Exception as e:
+        return []
+
+def apply_beat_effects(clip, beat_times):
+    """Flash bianchi ritmici"""
     clips = [clip]
     for beat in beat_times:
         if beat > clip.duration: break
+        # Flash molto rapido e sottile
         flash = (ColorClip(clip.size, color=(255,255,255))
                  .set_start(beat)
                  .set_duration(0.15)
-                 .set_opacity(0.2)
+                 .set_opacity(0.10) # Opacità ridotta per non accecare
                  .crossfadeout(0.15))
         clips.append(flash)
     return CompositeVideoClip(clips)
 
-def create_social_clip(source_path, output_path, start_sec, end_sec, options):
-    print(f"[ENGINE] Processing clip with GPU & AI: {start_sec} -> {end_sec}")
+# --- SOTTOTITOLI ---
+def generate_word_level_subs(audio_path):
+    try:
+        result = whisper_model.transcribe(audio_path, word_timestamps=True)
+        subs = []
+        for segment in result["segments"]:
+            for word in segment["words"]:
+                subs.append(((word["start"], word["end"]), word["word"].strip().upper()))
+        return subs
+    except Exception as e:
+        print(f"Subtitle error: {e}")
+        return []
+
+def create_caption_clip(subs, videosize):
+    w, h = videosize
+    # Usiamo un font di sistema sicuro
+    font_settings = 'Arial-Bold' if os.name == 'nt' else 'DejaVuSans-Bold'
     
-    # 1. Carica Subclip
+    def generator(txt):
+        return TextClip(txt, font=font_settings, fontsize=65, color='yellow', 
+                        stroke_color='black', stroke_width=2, method='caption', size=(w*0.9, None))
+        
+    return SubtitlesClip(subs, generator).set_position(('center', h*0.70))
+
+# --- MAIN PIPELINE ---
+def create_social_clip(source_path, output_path, start_sec, end_sec, options):
+    print(f"[PIPELINE] Processing Safe Mode: {start_sec}-{end_sec}s")
+    
+    # 1. Trim Video
     original = VideoFileClip(source_path).subclip(start_sec, end_sec)
     
-    # 2. SMART CROP (Il pezzo forte)
-    # Analizziamo il movimento
-    cropper = SmartCropper(original)
-    cropper.analyze()
-    
-    # Applichiamo il crop dinamico
-    # Nota: Usiamo fl_image che manipola i pixel direttamente
-    smart_cropped = original.fl_image(lambda img: img[:, int(max(0, min(img.shape[1] - (img.shape[0]*9//16), cropper.centers[int(original.fps * 0)] - (img.shape[0]*9//16)//2))):int(max(0, min(img.shape[1] - (img.shape[0]*9//16), cropper.centers[int(original.fps * 0)] - (img.shape[0]*9//16)//2))) + (img.shape[0]*9//16)])
-    
-    # FIX: La lambda sopra è complessa da passare a fl_image per via del tempo t.
-    # Usiamo un approccio più pulito con MoviePy:
-    def get_crop_region(t):
-        frame_idx = min(int(t * original.fps), len(cropper.centers)-1)
-        center_x = cropper.centers[frame_idx]
-        
-        # Target width basata sull'altezza (per mantenere 9:16)
-        h = original.h
-        w = int(h * 9 / 16)
-        
-        x1 = int(center_x - w/2)
-        # Clamping
-        if x1 < 0: x1 = 0
-        if x1 + w > original.w: x1 = original.w - w
-        
-        return x1, 0, x1+w, h
+    # Audio temporaneo per analisi
+    temp_audio = "temp_audio.wav"
+    original.audio.write_audiofile(temp_audio, verbose=False, logger=None)
 
-    # Applichiamo il crop dinamico usando scroll
-    # Purtroppo 'scroll' di moviepy è limitato. Facciamo il crop statico centrato SUL SOGGETTO
-    # per evitare jittering eccessivo in questa versione, o usiamo il tracking calcolato.
-    # Per stabilità ora: Calcoliamo la MEDIANA della posizione del soggetto.
-    avg_center = np.median(cropper.centers)
-    
-    crop_w = int(original.h * 9 / 16)
-    x1 = int(avg_center - crop_w/2)
-    if x1 < 0: x1 = 0
-    if x1 + crop_w > original.w: x1 = original.w - crop_w
-    
-    # Crop focalizzato sul soggetto principale (Smart Static Crop)
-    # Se vuoi il tracking dinamico (camera che si muove), serve più potenza di calcolo
-    # per evitare che il video "tremi". Questo approccio è sicuro.
-    main_content = original.crop(x1=x1, y1=0, width=crop_w, height=original.h)
-    
-    # Resize finale a 1080x1920
-    main_content = main_content.resize((1080, 1920))
-    
-    # 3. Color Grading
-    main_content = main_content.fx(vfx.colorx, 1.15).fx(vfx.lum_contrast, 0, 40, 128)
+    # 2. Smart Tracking (Calcolo coordinate)
+    tracker = DynamicTracker(original)
+    tracker.analyze()
 
-    # 4. Audio & Beats
-    music_name = options.get("music", "phonk_beat")
+    # Funzione di crop dinamico sicura
+    def crop_filter(get_frame, t):
+        img = get_frame(t)
+        h, w, _ = img.shape
+        target_w = int(h * 9 / 16) # Aspect ratio verticale
+        
+        center_x = tracker.get_center(t)
+        
+        # Calcola x1 assicurandosi che non esca dai bordi
+        x1 = int(center_x - target_w/2)
+        x1 = max(0, min(x1, w - target_w))
+        
+        return img[:, x1:x1+target_w]
+
+    cropped_clip = original.fl(crop_filter, apply_to=['mask'])
+    
+    # Resize a 1080x1920
+    main_video = cropped_clip.resize(height=1920)
+    # Se dopo il resize la larghezza non è 1080, forziamo il crop centrale finale per sicurezza
+    if main_video.w != 1080:
+        main_video = main_video.crop(x1=main_video.w/2 - 540, width=1080, height=1920)
+
+    # 3. COLOR GRADING (CORRETTO PER SCENE SCURE)
+    # Rimuoviamo lum_contrast che rompe i pixel.
+    # Usiamo solo un leggero aumento di saturazione (1.1) e luminosità neutra.
+    main_video = main_video.fx(vfx.colorx, 1.05) 
+
+    # 4. AUDIO MIXING
+    music_name = options.get("music", "ambient")
     music_path = os.path.join("data", "music", f"{music_name}.mp3")
-    
     final_audio = original.audio
-    beat_times = []
 
     if os.path.exists(music_path):
-        print("[PHONK] Beat Detection...")
-        beat_times = detect_beats(music_path)
-        music = AudioFileClip(music_path)
+        beat_times = get_beat_times(music_path)
+        main_video = apply_beat_effects(main_video, beat_times)
         
-        if music.duration < original.duration:
-            music = afx.audio_loop(music, duration=original.duration)
+        music = AudioFileClip(music_path)
+        if music.duration < main_video.duration:
+            music = afx.audio_loop(music, duration=main_video.duration)
         else:
-            music = music.subclip(0, original.duration)
+            music = music.subclip(0, main_video.duration)
             
-        final_audio = CompositeAudioClip([original.audio.volumex(1.5), music.volumex(0.5)])
+        # Volume Mix: Voce alta, Musica bassa
+        final_audio = CompositeAudioClip([
+            original.audio.volumex(1.2),  # Voce
+            music.volumex(0.3)            # Musica Background
+        ])
 
-    # 5. Flash Effects
-    final_video = apply_phonk_effects(main_content, beat_times)
-    final_video = final_video.set_audio(final_audio)
+    # 5. SOTTOTITOLI
+    print("[STEP 5] Generating Captions...")
+    try:
+        subs_data = generate_word_level_subs(temp_audio)
+        if subs_data:
+            subtitle_clip = create_caption_clip(subs_data, main_video.size)
+            final = CompositeVideoClip([main_video, subtitle_clip])
+        else:
+            final = CompositeVideoClip([main_video])
+    except Exception as e:
+        print(f"Caption error skipped: {e}")
+        final = CompositeVideoClip([main_video])
 
-    # 6. GPU EXPORT (NVENC)
-    print("[EXPORT] Rendering with NVIDIA NVENC...")
-    final_video.write_videofile(
+    final = final.set_audio(final_audio)
+
+    # EXPORT NVENC (Safe Mode)
+    print("[RENDER] Exporting...")
+    final.write_videofile(
         output_path,
-        codec="h264_nvenc", # <--- LA CHIAVE PER LA VELOCITÀ
+        codec="h264_nvenc",
         audio_codec="aac",
-        bitrate="8000k",    # Bitrate alto per qualità
+        bitrate="6M", # Bitrate sicuro
         fps=30,
-        preset="p4",        # Preset NVENC (p1=veloce, p7=qualità)
-        threads=8
+        preset="p4",
+        threads=8,
+        logger=None
     )
     
     original.close()
+    if os.path.exists(temp_audio): os.remove(temp_audio)
+    
     return output_path
