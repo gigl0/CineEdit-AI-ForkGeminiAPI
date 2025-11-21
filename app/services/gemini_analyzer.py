@@ -12,36 +12,34 @@ def extract_json_block(text: str) -> str:
 
 def generate_narrative_sections(full_transcript: str, scenes: list) -> list:
     """
-    STEP 1: CONTENT CURATION & SENTIMENT ANALYSIS
-    Obiettivo: Massimizzare il Retention Rate identificando High Intensity Moments.
+    BLUE LOCK ANALYZER - LONG FORM
+    Obiettivo: Trovare scene complete, non solo frammenti.
     """
-    print("[PIPELINE STEP 1] Content Curation via Gemini 1.5...")
+    print("[BLUE LOCK ENGINE] Searching for LONG scenes (30s - 120s)...")
     
-    # Usiamo il modello stabile o preview a tua scelta
     model = genai.GenerativeModel('gemini-2.0-flash-exp') 
 
     prompt = f"""
-    ROLE: Expert Video Editor & Growth Hacker for Instagram Reels / TikTok.
-    OBJECTIVE: Analyze the TV Episode transcript to find 3 "High Retention" clips.
+    ROLE: Anime Video Editor.
+    TASK: Select the best FULL SCENES from this episode transcript.
 
-    INPUT DATA:
-    - TRANSCRIPT (Context): {full_transcript[:100000]}
-    - SCENE BOUNDARIES: {json.dumps(scenes[:80], indent=2)}
+    INPUT:
+    - TRANSCRIPT LEN: {len(full_transcript)} chars
+    - SCENES: {json.dumps(scenes[:100], indent=2)}
 
-    SELECTION LOGIC (The "Viral Formula"):
-    1. THE HOOK (0-3s): The clip must start with a strong visual or dialogue hook.
-    2. VALUE: High drama, conflict, humor, or "sigma" energy.
-    3. DURATION: 30s to 60s (Sweet spot for watch time).
+    CRITERIA:
+    1. **DURATION**: MUST be at least 30 seconds long. Ideally between 60s and 120s. DO NOT cut the scene short.
+    2. **CONTENT**: Look for full monologues, complete interactions, or long plays.
+    3. **CONTEXT**: Ensure the clip has a start, middle, and end.
 
-    OUTPUT JSON FORMAT ONLY:
+    OUTPUT JSON:
     [
       {{
-        "title": "POV: When you realize...",
-        "summary": "Reasoning for selection (e.g. 'High tension dialogue').",
-        "start_sec": 120.5,
-        "end_sec": 160.0,
-        "keywords": ["suspense", "sigma", "money"],
-        "virality_score": 95
+        "title": "Isagi's Full Monologue",
+        "summary": "Isagi analyzes the field and evolves.",
+        "start_sec": 120.0,
+        "end_sec": 200.0, 
+        "keywords": ["ego", "analysis"]
       }}
     ]
     """
@@ -51,4 +49,5 @@ def generate_narrative_sections(full_transcript: str, scenes: list) -> list:
         return json.loads(extract_json_block(response.text))
     except Exception as e:
         print(f"[GEMINI ERROR] {e}")
-        return []
+        # Fallback: se fallisce, prendi un blocco grosso a caso
+        return [{"title": "Fallback Long Scene", "summary": "Manual selection", "start_sec": 60, "end_sec": 120, "keywords": ["fallback"]}]

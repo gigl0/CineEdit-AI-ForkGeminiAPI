@@ -3,60 +3,52 @@ import numpy as np
 import librosa
 import whisper
 import torch
+import textwrap
+from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import (
     VideoFileClip, AudioFileClip, CompositeVideoClip, 
-    CompositeAudioClip, TextClip, ColorClip, vfx, afx
+    CompositeAudioClip, ImageClip, ColorClip, vfx, afx
 )
 from moviepy.video.tools.subtitles import SubtitlesClip
 from ultralytics import YOLO
 
-# Carichiamo i modelli una volta sola
-print("[INIT] Loading AI Models on RTX 4060 Ti...")
+print("[INIT] Loading Blue Lock Engine v4 (Clean Color + Long Clips)...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 yolo_model = YOLO('yolov8n.pt')
 whisper_model = whisper.load_model("medium", device=device)
 
-# --- TRACKING SOGGETTO (Stabilizzato) ---
-class DynamicTracker:
+# --- TRACKING SOGGETTO ---
+class AnimeTracker:
     def __init__(self, clip):
         self.clip = clip
         self.centers = []
 
     def analyze(self):
-        print("[STEP 2] Analyzing Subject Movement (YOLO Tracking)...")
+        print("   -> Tracking subject...")
+        # Campionamento ridotto per velocità su clip lunghe
         duration = self.clip.duration
-        # Analizziamo 2 frame al secondo (più veloce, meno jitter)
-        times = np.arange(0, duration, 0.5) 
+        times = np.arange(0, duration, 0.5) # 2 fps tracking
         detected_centers = []
-
-        last_known_center = self.clip.w / 2
+        last_center = self.clip.w / 2 
 
         for t in times:
             try:
                 frame = self.clip.get_frame(t)
-                results = yolo_model(frame, classes=[0], verbose=False) # 0 = person
-                
-                center_x = last_known_center # Fallback
-                
+                results = yolo_model(frame, classes=[0], conf=0.25, verbose=False)
+                current = last_center
                 if results[0].boxes:
-                    # Trova la persona con area maggiore
                     boxes = results[0].boxes.xywh.cpu().numpy()
-                    areas = boxes[:, 2] * boxes[:, 3]
-                    largest_idx = np.argmax(areas)
-                    center_x = boxes[largest_idx][0]
-                    last_known_center = center_x # Aggiorna memoria
-                
-                detected_centers.append(center_x)
-            except Exception as e:
-                print(f"Frame error: {e}")
-                detected_centers.append(last_known_center)
+                    current = boxes[np.argmax(boxes[:, 2] * boxes[:, 3])][0]
+                    last_center = current
+                detected_centers.append(current)
+            except:
+                detected_centers.append(last_center)
 
-        # Interpolazione lineare su tutti i frame
-        all_frames_times = np.arange(0, duration, 1/self.clip.fps)
-        self.centers = np.interp(all_frames_times, times, detected_centers)
+        all_times = np.arange(0, duration, 1/self.clip.fps)
+        self.centers = np.interp(all_times, times, detected_centers)
         
-        # Smoothing AGGRESSIVO (Media mobile di 2 secondi) per evitare mal di mare
-        window = int(self.clip.fps * 2)
+        # Smoothing molto forte (3 secondi) per movimenti lenti e cinematografici
+        window = int(self.clip.fps * 3)
         if window > 0:
             self.centers = np.convolve(self.centers, np.ones(window)/window, mode='same')
 
@@ -64,146 +56,128 @@ class DynamicTracker:
         idx = min(int(t * self.clip.fps), len(self.centers)-1)
         return self.centers[idx]
 
-# --- BEAT DETECTION ---
-def get_beat_times(audio_path):
-    try:
-        y, sr = librosa.load(audio_path)
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
-        return librosa.frames_to_time(beat_frames, sr=sr)
-    except Exception as e:
-        return []
-
-def apply_beat_effects(clip, beat_times):
-    """Flash bianchi ritmici"""
-    clips = [clip]
-    for beat in beat_times:
-        if beat > clip.duration: break
-        # Flash molto rapido e sottile
-        flash = (ColorClip(clip.size, color=(255,255,255))
-                 .set_start(beat)
-                 .set_duration(0.15)
-                 .set_opacity(0.10) # Opacità ridotta per non accecare
-                 .crossfadeout(0.15))
-        clips.append(flash)
-    return CompositeVideoClip(clips)
-
-# --- SOTTOTITOLI ---
-def generate_word_level_subs(audio_path):
-    try:
-        result = whisper_model.transcribe(audio_path, word_timestamps=True)
-        subs = []
-        for segment in result["segments"]:
-            for word in segment["words"]:
-                subs.append(((word["start"], word["end"]), word["word"].strip().upper()))
-        return subs
-    except Exception as e:
-        print(f"Subtitle error: {e}")
-        return []
-
-def create_caption_clip(subs, videosize):
-    w, h = videosize
-    # Usiamo un font di sistema sicuro
-    font_settings = 'Arial-Bold' if os.name == 'nt' else 'DejaVuSans-Bold'
+# --- SOTTOTITOLI PILLOW ---
+def create_text_image(text, w, h, fontsize=65):
+    img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
     
-    def generator(txt):
-        return TextClip(txt, font=font_settings, fontsize=65, color='yellow', 
-                        stroke_color='black', stroke_width=2, method='caption', size=(w*0.9, None))
+    font_paths = ["C:/Windows/Fonts/arialbd.ttf", "arial.ttf"]
+    font = ImageFont.load_default()
+    for p in font_paths:
+        if os.path.exists(p):
+            font = ImageFont.truetype(p, fontsize); break
+
+    char_width = fontsize * 0.6
+    chars = int((w * 0.85) / char_width)
+    lines = textwrap.wrap(text.upper(), width=chars)
+    
+    y = h * 0.75
+    for line in lines:
+        bbox = draw.textbbox((0,0), line, font=font)
+        lw, lh = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        x = (w - lw) / 2
         
-    return SubtitlesClip(subs, generator).set_position(('center', h*0.70))
+        # Bordo
+        s = 4
+        for ox in range(-s, s+1):
+            for oy in range(-s, s+1):
+                draw.text((x+ox, y+oy), line, font=font, fill='black')
+        
+        # Colore Ciano
+        draw.text((x, y), line, font=font, fill='#00FFFF')
+        y += lh + 10
+    return np.array(img)
 
-# --- MAIN PIPELINE ---
+def generate_pillow_subs(audio_path, w, h):
+    try:
+        print("   -> Generating ENGLISH subs from Japanese audio...")
+        # AGGIUNTO: task="translate"
+        # Questo forza Whisper a tradurre l'audio (qualsiasi lingua) in Inglese
+        res = whisper_model.transcribe(
+            audio_path, 
+            task="translate",  # <--- LA CHIAVE DEL SUCCESSO
+            word_timestamps=True
+        )
+        
+        # Il resto rimane uguale, ora 'w' sarà una parola inglese
+        return [ImageClip(create_text_image(w['word'].strip(), w, h)).set_start(w['start']).set_duration(w['end']-w['start']).set_position("center") 
+                for s in res['segments'] for w in s['words']]
+    except Exception as e: 
+        print(f"Subs error: {e}")
+        return []
+
+# --- MAIN ---
 def create_social_clip(source_path, output_path, start_sec, end_sec, options):
-    print(f"[PIPELINE] Processing Safe Mode: {start_sec}-{end_sec}s")
+    # Nessun limite di durata forzato, rispettiamo start ed end
+    print(f"[EDIT] Duration: {end_sec - start_sec}s")
     
-    # 1. Trim Video
-    original = VideoFileClip(source_path).subclip(start_sec, end_sec)
+    original_full = VideoFileClip(source_path)
+    # Controllo limiti
+    end_sec = min(end_sec, original_full.duration)
+    original = original_full.subclip(start_sec, end_sec)
     
-    # Audio temporaneo per analisi
     temp_audio = "temp_audio.wav"
     original.audio.write_audiofile(temp_audio, verbose=False, logger=None)
 
-    # 2. Smart Tracking (Calcolo coordinate)
-    tracker = DynamicTracker(original)
+    # 1. CROP DINAMICO
+    tracker = AnimeTracker(original)
     tracker.analyze()
-
-    # Funzione di crop dinamico sicura
+    
     def crop_filter(get_frame, t):
         img = get_frame(t)
         h, w, _ = img.shape
-        target_w = int(h * 9 / 16) # Aspect ratio verticale
-        
+        target_w = int(h * 9 / 16)
         center_x = tracker.get_center(t)
-        
-        # Calcola x1 assicurandosi che non esca dai bordi
         x1 = int(center_x - target_w/2)
         x1 = max(0, min(x1, w - target_w))
-        
         return img[:, x1:x1+target_w]
 
-    cropped_clip = original.fl(crop_filter, apply_to=['mask'])
+    # Applicazione crop
+    cropped = original.fl(crop_filter, apply_to=['mask'])
+    main_video = cropped.resize(height=1920)
     
-    # Resize a 1080x1920
-    main_video = cropped_clip.resize(height=1920)
-    # Se dopo il resize la larghezza non è 1080, forziamo il crop centrale finale per sicurezza
+    # Safety check larghezza
     if main_video.w != 1080:
-        main_video = main_video.crop(x1=main_video.w/2 - 540, width=1080, height=1920)
+        main_video = main_video.crop(x1=main_video.w/2-540, width=1080, height=1920)
 
-    # 3. COLOR GRADING (CORRETTO PER SCENE SCURE)
-    # Rimuoviamo lum_contrast che rompe i pixel.
-    # Usiamo solo un leggero aumento di saturazione (1.1) e luminosità neutra.
-    main_video = main_video.fx(vfx.colorx, 1.05) 
+    # 2. COLORI ORIGINALI (Fix Verde)
+    # NON applichiamo nessun fx(colorx) o fx(lum_contrast).
+    # Lasciamo i colori originali dell'anime per evitare corruzione.
 
-    # 4. AUDIO MIXING
-    music_name = options.get("music", "ambient")
-    music_path = os.path.join("data", "music", f"{music_name}.mp3")
+    # 3. AUDIO
+    music_path = "data/music/phonk_blue_lock.mp3"
     final_audio = original.audio
 
     if os.path.exists(music_path):
-        beat_times = get_beat_times(music_path)
-        main_video = apply_beat_effects(main_video, beat_times)
-        
         music = AudioFileClip(music_path)
+        # Loop intelligente per clip lunghe
         if music.duration < main_video.duration:
             music = afx.audio_loop(music, duration=main_video.duration)
         else:
             music = music.subclip(0, main_video.duration)
             
-        # Volume Mix: Voce alta, Musica bassa
-        final_audio = CompositeAudioClip([
-            original.audio.volumex(1.2),  # Voce
-            music.volumex(0.3)            # Musica Background
-        ])
+        final_audio = CompositeAudioClip([original.audio.volumex(1.5), music.volumex(0.3)])
 
-    # 5. SOTTOTITOLI
-    print("[STEP 5] Generating Captions...")
-    try:
-        subs_data = generate_word_level_subs(temp_audio)
-        if subs_data:
-            subtitle_clip = create_caption_clip(subs_data, main_video.size)
-            final = CompositeVideoClip([main_video, subtitle_clip])
-        else:
-            final = CompositeVideoClip([main_video])
-    except Exception as e:
-        print(f"Caption error skipped: {e}")
-        final = CompositeVideoClip([main_video])
+    # 4. SUBS & COMPOSITE
+    subs = generate_pillow_subs(temp_audio, 1080, 1920)
+    final = CompositeVideoClip([main_video] + subs).set_audio(final_audio)
 
-    final = final.set_audio(final_audio)
-
-    # EXPORT NVENC (Safe Mode)
-    print("[RENDER] Exporting...")
+    # 5. EXPORT (Fix Verde)
+    print("   -> Rendering NVENC...")
     final.write_videofile(
         output_path,
         codec="h264_nvenc",
         audio_codec="aac",
-        bitrate="6M", # Bitrate sicuro
-        fps=30,
+        bitrate="6M",
+        fps=24,
         preset="p4",
         threads=8,
+        # QUESTO È IL FIX PER IL VIDEO VERDE:
+        ffmpeg_params=["-pix_fmt", "yuv420p"],
         logger=None
     )
     
+    original_full.close()
     original.close()
     if os.path.exists(temp_audio): os.remove(temp_audio)
-    
     return output_path
