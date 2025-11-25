@@ -71,5 +71,3 @@ Output strictly JSON. No markdown.
             "end_sec": scenes[0][1],
             "keywords": ["fallback"]
         }] if scenes else []
-
-# Le altre funzioni (generate_edit_plan) rimangono simili...
